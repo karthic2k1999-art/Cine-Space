@@ -16,8 +16,21 @@
       <p>Remove Digital Sharpness. Preserve Real Detail.</p>
     </div>
   </div>
-  <div class="privacy-pill" id="engineStatus">Loading real FFmpeg engine…</div>
+  <div class="privacy-pill" id="engineStatus">Checking backend server…</div>
 </header>
+
+<!-- BACKEND CONNECTION -->
+<section class="panel" id="backendPanel" style="padding:14px 18px;max-width:720px;margin:16px auto 0;">
+  <h2 style="font-size:12px;letter-spacing:1.5px;color:var(--sub);text-transform:uppercase;margin:0 0 10px;">Backend Server</h2>
+  <div style="display:flex;gap:8px;">
+    <input id="backendUrlInput" type="url" placeholder="https://your-app.onrender.com"
+      style="flex:1;background:var(--bg2);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13px;" />
+    <button id="backendSaveBtn" class="ghost-btn">Save</button>
+  </div>
+  <p class="hint" id="backendHint" style="margin-top:10px;text-align:left;">
+    Paste your Render backend URL once (see backend README). Saved on this phone only.
+  </p>
+</section>
 
 <noscript>
   <div style="max-width:720px;margin:24px auto;padding:16px;background:#241214;border:1px solid #e15b5b;border-radius:10px;color:#ffb3b3;font-family:sans-serif;">
@@ -42,7 +55,7 @@
       <span>Upload Video</span>
       <small>MP4 · MOV · MKV · AVI · WebM · M4V · TS · MTS · M2TS</small>
     </button>
-    <p class="hint">Processed locally in your browser. Nothing is uploaded to any server.</p>
+    <p class="hint">Your video is uploaded to your own backend server for real ffmpeg processing, then downloaded back — set your backend URL above first.</p>
   </section>
 
   <!-- STEP 2: PREVIEW -->
@@ -159,6 +172,6 @@
     }
   });
 </script>
-<script type="module" src="app.js?v=4"></script>
+<script type="module" src="app.js?v=5"></script>
 </body>
 </html>

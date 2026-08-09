@@ -1,26 +1,9 @@
-/* CINEMATIC CRISP — real client-side video processing using ffmpeg.wasm (actual FFmpeg compiled to WebAssembly).
-   No fake progress, no fake output. Everything below runs real FFmpeg filters on the real uploaded file. */
+/* CINEMATIC CRISP — real video processing via a real backend server (Node + actual ffmpeg
+   binary running server-side). No fake progress, no fake output, no client-side wasm engine —
+   this build talks to the Cinematic Crisp backend (see /backend in the project) over HTTP. */
 
 (async () => {
   "use strict";
-
-  // ---------- CDN LOADING (with fallback) ----------
-  // jsDelivr is tried first (generally the most reliable CDN on mobile networks in India/SEA),
-  // unpkg is the fallback if jsDelivr is blocked/unreachable. Both serve the identical package.
-  const CDN_MIRRORS = [
-    {
-      ffmpegPkg: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
-      utilPkg: "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js",
-      coreBase: "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm",
-      ffmpegBase: "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm",
-    },
-    {
-      ffmpegPkg: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js",
-      utilPkg: "https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js",
-      coreBase: "https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm",
-      ffmpegBase: "https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm",
-    },
-  ];
 
   function showFatal(message) {
     const box = document.getElementById("fatalBoot");
@@ -31,38 +14,16 @@
     }
   }
 
-  let FFmpeg, fetchFile, toBlobURL, MIRROR;
-  let lastImportErr = null;
-  for (const mirror of CDN_MIRRORS) {
-    try {
-      const ffmpegMod = await import(mirror.ffmpegPkg);
-      const utilMod = await import(mirror.utilPkg);
-      FFmpeg = ffmpegMod.FFmpeg;
-      fetchFile = utilMod.fetchFile;
-      toBlobURL = utilMod.toBlobURL;
-      MIRROR = mirror;
-      break;
-    } catch (e) {
-      lastImportErr = e;
-    }
+  // ---------- BACKEND CONNECTION ----------
+  const BACKEND_KEY = "cinematic_crisp_backend_url";
+  function getBackendUrl() {
+    return (localStorage.getItem(BACKEND_KEY) || "").replace(/\/+$/, "");
   }
-  if (!MIRROR) {
-    showFatal(
-      "Could not load the FFmpeg engine from any CDN (jsDelivr or unpkg). Check your internet " +
-        "connection, disable any content/ad blocker for this site, and reload. Detail: " +
-        (lastImportErr && (lastImportErr.message || lastImportErr))
-    );
-    return;
+  function setBackendUrl(url) {
+    localStorage.setItem(BACKEND_KEY, url.replace(/\/+$/, ""));
   }
 
-  // ---------- CONFIG ----------
-  // Using the ESM build (not UMD): the worker script here has a fixed, documented filename
-  // ("worker.js") instead of a webpack content-hash filename that can change between builds.
-  // This is what we convert to a same-origin blob: URL below to avoid the
-  // "SecurityError: Failed to construct 'Worker'" cross-origin problem.
-  const CORE_BASE = MIRROR.coreBase;
-  const FFMPEG_BASE = MIRROR.ffmpegBase;
-  const MAX_RECOMMENDED_BYTES = 700 * 1024 * 1024; // ~700MB soft warning (browser memory limit, not a fake cap)
+  const MAX_RECOMMENDED_BYTES = 700 * 1024 * 1024; // ~700MB soft warning (upload size / server memory, not a fake cap)
 
   // ---------- LOOK PROFILES ----------
   // Every profile maps to REAL ffmpeg filter parameters. sharpness is the default position
@@ -162,61 +123,65 @@
     errorDetail: $("errorDetail"),
     historyPanel: $("historyPanel"),
     historyList: $("historyList"),
+    backendUrlInput: $("backendUrlInput"),
+    backendSaveBtn: $("backendSaveBtn"),
+    backendHint: $("backendHint"),
   };
 
-  // ---------- FFMPEG ENGINE INIT ----------
+  // ---------- BACKEND ENGINE (real server, real ffmpeg) ----------
+  el.backendUrlInput.value = getBackendUrl();
+
+  el.backendSaveBtn.addEventListener("click", () => {
+    const url = el.backendUrlInput.value.trim();
+    if (!/^https?:\/\/.+/.test(url)) {
+      el.backendHint.textContent = "Enter a full URL starting with https:// (e.g. https://your-app.onrender.com)";
+      el.backendHint.style.color = "var(--danger)";
+      return;
+    }
+    setBackendUrl(url);
+    el.backendHint.style.color = "";
+    initEngine();
+  });
+
   async function initEngine() {
+    const backend = getBackendUrl();
+    if (!backend) {
+      state.ffmpegReady = false;
+      el.engineStatus.textContent = "No backend set";
+      el.engineStatus.classList.remove("ready");
+      el.engineStatus.classList.add("error");
+      el.backendHint.textContent = "Paste your Render backend URL above and tap Save to connect.";
+      return;
+    }
+    el.engineStatus.textContent = "Connecting to backend…";
+    el.engineStatus.classList.remove("ready", "error");
     try {
-      const ffmpeg = new FFmpeg();
+      // Render free tier sleeps after inactivity — first request can take 30-50s to wake it up.
+      // This is the server actually booting, not a stuck request, so we give it a long timeout
+      // and say so in the UI instead of failing fast and looking broken.
+      el.backendHint.textContent = "Waking up server… this can take up to 50s if it's been idle (Render free tier).";
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+      const res = await fetch(`${backend}/api/health`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) throw new Error(`Health check returned HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data.ok) throw new Error("Server responded but ffmpeg is not installed there.");
 
-      ffmpeg.on("log", ({ message }) => {
-        // Real log lines from the real FFmpeg binary — used to detect processing stage.
-        if (/frame=/.test(message)) {
-          setStage("ENCODING");
-        }
-      });
-
-      ffmpeg.on("progress", ({ progress }) => {
-        if (!state.processing) return;
-        const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
-        updateProgress(pct);
-      });
-
-      // @ffmpeg/ffmpeg internally spawns its own Worker. Loading that worker script directly
-      // from a different origin (unpkg.com) is blocked by the browser's Same-Origin policy for
-      // Workers ("SecurityError: Failed to construct 'Worker'"). Fix: download it and hand
-      // FFmpeg a same-origin blob: URL instead, same as we already do for the core engine below.
-      let coreURL, wasmURL, classWorkerURL;
-      try {
-        coreURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript");
-      } catch (e) {
-        throw new Error(`Could not download ffmpeg-core.js from ${CORE_BASE}. ${e.message || e}`);
-      }
-      try {
-        wasmURL = await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm");
-      } catch (e) {
-        throw new Error(`Could not download ffmpeg-core.wasm from ${CORE_BASE}. ${e.message || e}`);
-      }
-      try {
-        classWorkerURL = await toBlobURL(`${FFMPEG_BASE}/worker.js`, "text/javascript");
-      } catch (e) {
-        throw new Error(`Could not download worker.js from ${FFMPEG_BASE}. ${e.message || e}`);
-      }
-
-      await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
-
-      state.ffmpeg = ffmpeg;
       state.ffmpegReady = true;
-      el.engineStatus.textContent = "Real FFmpeg engine ready (local, in-browser)";
+      el.engineStatus.textContent = "Backend connected — real ffmpeg ready";
       el.engineStatus.classList.remove("error");
       el.engineStatus.classList.add("ready");
+      el.backendHint.textContent = `Connected: ${data.ffmpeg || "ffmpeg ready"}`;
       if (state.file) el.processBtn.disabled = false;
     } catch (err) {
       state.ffmpegReady = false;
-      el.engineStatus.textContent = "Engine failed to load";
+      el.engineStatus.textContent = "Backend not reachable";
+      el.engineStatus.classList.remove("ready");
       el.engineStatus.classList.add("error");
       showError(
-        "The real processing engine could not be loaded. Check your internet connection and reload the page (pull down to refresh, or clear the browser cache once).",
+        "Could not reach the backend server. Check the URL is correct and the service is deployed " +
+          "and running (Render dashboard → your service → should say 'Live'), then tap Save again.",
         err
       );
     }
@@ -424,8 +389,17 @@
   el.processBtn.addEventListener("click", processVideo);
   el.cancelBtn.addEventListener("click", cancelProcessing);
 
+  let currentJobId = null;
+  let pollHandle = null;
+
   async function processVideo() {
     if (!state.file || !state.ffmpegReady || state.processing) return;
+    const backend = getBackendUrl();
+    if (!backend) {
+      showError("No backend server connected. Paste your backend URL above and tap Save first.", null);
+      return;
+    }
+
     hideError();
     el.resultBlock.classList.add("hidden");
     state.cancelRequested = false;
@@ -434,55 +408,66 @@
     el.cancelBtn.classList.remove("hidden");
     el.progressBlock.classList.remove("hidden");
     updateProgress(0);
-    setStage("Reading file");
+    setStage("Uploading to server");
 
     const startTime = Date.now();
     let timerHandle = setInterval(() => {
       el.progressElapsed.textContent = `Elapsed: ${formatTime((Date.now() - startTime) / 1000)}`;
     }, 500);
 
-    const ffmpeg = state.ffmpeg;
-    const inExt = (state.file.name.split(".").pop() || "mp4").toLowerCase();
-    const inputName = `input.${inExt}`;
-    const outputName = "output.mp4";
-
     try {
-      const data = await fetchFile(state.file);
-      if (state.cancelRequested) throw new CancelError();
+      const form = new FormData();
+      form.append("video", state.file, state.file.name);
+      form.append("sharpness", String(state.sharpness));
+      form.append("adv", JSON.stringify(state.adv));
+      form.append("quality", el.qualitySelect.value);
 
-      await ffmpeg.writeFile(inputName, data);
-      if (state.cancelRequested) throw new CancelError();
-
-      setStage("FFprobe / analyzing");
-      // real ffprobe-equivalent metadata already captured via <video> element above (duration/res/fps)
-
-      setStage("DESHARPING / ENCODING");
-      const vf = buildFilterChain();
-      const q = QUALITY_PRESETS[el.qualitySelect.value] || QUALITY_PRESETS.balanced;
-
-      const args = [
-        "-i", inputName,
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-preset", q.x264preset,
-        "-crf", String(q.crf),
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-movflags", "+faststart",
-        outputName,
-      ];
-
-      await ffmpeg.exec(args);
-      if (state.cancelRequested) throw new CancelError();
-
-      setStage("Validating output");
-      const output = await ffmpeg.readFile(outputName);
-      if (!output || output.length === 0) {
-        throw new Error("FFmpeg produced an empty output file. Processing failed.");
+      const startRes = await fetch(`${backend}/api/process`, { method: "POST", body: form });
+      if (!startRes.ok) {
+        const body = await startRes.text().catch(() => "");
+        throw new Error(`Server rejected the upload (HTTP ${startRes.status}). ${body.slice(0, 300)}`);
       }
+      const { jobId, error: startErr } = await startRes.json();
+      if (startErr) throw new Error(startErr);
+      if (!jobId) throw new Error("Server did not return a job id.");
+      currentJobId = jobId;
 
-      const blob = new Blob([output.buffer], { type: "video/mp4" });
+      setStage("Analyzing / encoding on server");
+
+      // Real progress: poll the backend, which reports actual ffmpeg -progress output.
+      const finalStatus = await new Promise((resolve, reject) => {
+        pollHandle = setInterval(async () => {
+          if (state.cancelRequested) {
+            clearInterval(pollHandle);
+            reject(new CancelError());
+            return;
+          }
+          try {
+            const statusRes = await fetch(`${backend}/api/status/${jobId}`);
+            if (!statusRes.ok) throw new Error(`Status check failed (HTTP ${statusRes.status})`);
+            const s = await statusRes.json();
+            updateProgress(s.progress || 0);
+            setStage(s.stage || "Processing");
+            if (s.status === "done") {
+              clearInterval(pollHandle);
+              resolve(s);
+            } else if (s.status === "error") {
+              clearInterval(pollHandle);
+              reject(new Error(s.error || "Server-side processing failed."));
+            }
+          } catch (e) {
+            clearInterval(pollHandle);
+            reject(e);
+          }
+        }, 1500);
+      });
+
+      setStage("Downloading result");
+      const dlRes = await fetch(`${backend}${finalStatus.downloadUrl}`);
+      if (!dlRes.ok) throw new Error(`Could not download processed file (HTTP ${dlRes.status})`);
+      const blob = await dlRes.blob();
+      if (!blob || blob.size === 0) throw new Error("Server returned an empty file.");
+
       if (state.outputURL) URL.revokeObjectURL(state.outputURL);
       state.outputURL = URL.createObjectURL(blob);
 
@@ -515,15 +500,12 @@
         status: "success",
         outputName: outName,
       });
-
-      await cleanupFS(ffmpeg, inputName, outputName);
     } catch (err) {
-      await cleanupFS(ffmpeg, inputName, outputName);
       if (err instanceof CancelError) {
         setStage("Cancelled");
         showError("Processing was cancelled. Your original file was never modified.", null);
       } else {
-        showError("Unable to process this video. Your original file is safe.", err);
+        showError("Unable to process this video on the server. Your original file is safe.", err);
         saveHistory({
           filename: state.file.name,
           date: new Date().toISOString(),
@@ -535,29 +517,20 @@
       }
     } finally {
       clearInterval(timerHandle);
+      clearInterval(pollHandle);
       state.processing = false;
       el.processBtn.disabled = false;
       el.cancelBtn.classList.add("hidden");
     }
   }
 
-  async function cleanupFS(ffmpeg, inputName, outputName) {
-    try { await ffmpeg.deleteFile(inputName); } catch (_) {}
-    try { await ffmpeg.deleteFile(outputName); } catch (_) {}
-  }
-
   class CancelError extends Error {}
 
   async function cancelProcessing() {
     state.cancelRequested = true;
-    try {
-      if (state.ffmpeg) await state.ffmpeg.terminate();
-    } catch (_) {}
-    // Re-init a fresh engine instance since terminate() kills the worker.
-    state.ffmpegReady = false;
-    el.engineStatus.textContent = "Restarting engine…";
-    el.engineStatus.classList.remove("ready");
-    await initEngine();
+    clearInterval(pollHandle);
+    // Note: this stops the browser from waiting on the job; the server-side ffmpeg process for
+    // that job id keeps running to completion in this skeleton (no server-side kill wired up yet).
   }
 
   function updateProgress(pct) {
