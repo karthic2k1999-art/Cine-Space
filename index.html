@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
+<title>Cinematic Crisp — Remove Digital Sharpness. Preserve Real Detail.</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">CC</span>
+    <div class="brand-text">
+      <h1>CINEMATIC CRISP</h1>
+      <p>Remove Digital Sharpness. Preserve Real Detail.</p>
+    </div>
+  </div>
+  <div class="privacy-pill" id="engineStatus">Loading real FFmpeg engine…</div>
+</header>
+
+<noscript>
+  <div style="max-width:720px;margin:24px auto;padding:16px;background:#241214;border:1px solid #e15b5b;border-radius:10px;color:#ffb3b3;font-family:sans-serif;">
+    JavaScript is disabled or blocked in this browser. Cinematic Crisp needs JavaScript to run
+    the real FFmpeg engine. Please enable JavaScript and reload.
+  </div>
+</noscript>
+
+<div id="fatalBoot" class="hidden" style="max-width:720px;margin:24px auto;padding:16px;background:#241214;border:1px solid #e15b5b;border-radius:10px;color:#ffb3b3;font-family:sans-serif;">
+  <b>Something failed to load.</b>
+  <p id="fatalBootMsg" style="font-size:13px;"></p>
+  <p style="font-size:12px;color:#9a9ca3;">Try pull-to-refresh, or clear the browser cache and reload once.</p>
+</div>
+
+<main class="app">
+
+  <!-- STEP 1: UPLOAD -->
+  <section class="panel upload-panel" id="uploadPanel">
+    <input type="file" id="fileInput" accept="video/*,.mkv,.mts,.m2ts,.ts" hidden />
+    <button class="upload-btn" id="uploadBtn">
+      <span class="upload-icon">⬆</span>
+      <span>Upload Video</span>
+      <small>MP4 · MOV · MKV · AVI · WebM · M4V · TS · MTS · M2TS</small>
+    </button>
+    <p class="hint">Processed locally in your browser. Nothing is uploaded to any server.</p>
+  </section>
+
+  <!-- STEP 2: PREVIEW -->
+  <section class="panel preview-panel hidden" id="previewPanel">
+    <div class="preview-wrap" id="previewWrap">
+      <video id="beforeVideo" playsinline muted loop preload="auto"></video>
+      <div class="after-clip" id="afterClip">
+        <video id="afterVideo" playsinline muted loop preload="auto"></video>
+      </div>
+      <div class="compare-line" id="compareLine">
+        <div class="compare-handle">
+          <span>◀</span><span>▶</span>
+        </div>
+      </div>
+      <span class="tag tag-before">BEFORE</span>
+      <span class="tag tag-after">AFTER</span>
+    </div>
+    <div class="preview-controls">
+      <button id="playBtn" class="ghost-btn">▶ Play</button>
+      <span class="preview-meta" id="previewMeta">—</span>
+    </div>
+
+    <!-- LOOKS -->
+    <div class="block">
+      <h2>Looks</h2>
+      <div class="looks-grid" id="looksGrid"></div>
+    </div>
+
+    <!-- SHARPNESS -->
+    <div class="block">
+      <div class="sharpness-head">
+        <h2>Sharpness</h2>
+        <span id="sharpVal">0</span>
+      </div>
+      <input type="range" id="sharpSlider" min="-100" max="100" value="0" step="1" />
+      <div class="slider-labels">
+        <span>−100 Softer</span>
+        <span>0 Original</span>
+        <span>+100 Sharper</span>
+      </div>
+    </div>
+
+    <!-- ADVANCED -->
+    <details class="advanced-block" id="advancedBlock">
+      <summary>Advanced Settings</summary>
+      <div class="adv-grid" id="advGrid"></div>
+    </details>
+
+    <!-- PROCESS -->
+    <div class="process-row">
+      <select id="qualitySelect" title="Processing Quality">
+        <option value="low">Low (fast)</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="high">High</option>
+        <option value="maximum">Maximum (slow)</option>
+      </select>
+      <button id="processBtn" class="primary-btn" disabled>PROCESS VIDEO</button>
+      <button id="cancelBtn" class="danger-btn hidden">CANCEL</button>
+    </div>
+
+    <!-- PROGRESS -->
+    <div class="progress-block hidden" id="progressBlock">
+      <div class="progress-top">
+        <span id="progressStage">Preparing…</span>
+        <span id="progressPercent">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-meta">
+        <span id="progressElapsed">Elapsed: 0s</span>
+        <span id="progressEta">ETA: —</span>
+      </div>
+    </div>
+
+    <!-- RESULT -->
+    <div class="result-block hidden" id="resultBlock">
+      <h2>Output Ready</h2>
+      <ul class="result-list" id="resultList"></ul>
+      <a id="downloadBtn" class="primary-btn" download>DOWNLOAD VIDEO</a>
+    </div>
+
+    <!-- ERROR -->
+    <div class="error-block hidden" id="errorBlock">
+      <p id="errorMessage"></p>
+      <details><summary>Technical details</summary><pre id="errorDetail"></pre></details>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section class="panel history-panel hidden" id="historyPanel">
+    <h2>History</h2>
+    <div id="historyList" class="history-list"></div>
+  </section>
+
+</main>
+
+<script>
+  // Safety net: if the module script below fails to even parse/execute (blocked script,
+  // syntax error, ad-blocker, etc.), this guarantees the user sees a real message instead
+  // of a silent blank page.
+  window.addEventListener("error", function (e) {
+    var box = document.getElementById("fatalBoot");
+    var msg = document.getElementById("fatalBootMsg");
+    if (box && msg && box.classList.contains("hidden")) {
+      box.classList.remove("hidden");
+      msg.textContent = (e.message || "Unknown script error") + (e.filename ? " (" + e.filename + ")" : "");
+    }
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var box = document.getElementById("fatalBoot");
+    var msg = document.getElementById("fatalBootMsg");
+    if (box && msg && box.classList.contains("hidden")) {
+      box.classList.remove("hidden");
+      msg.textContent = "Engine promise error: " + (e.reason && (e.reason.message || e.reason) || "unknown");
+    }
+  });
+</script>
+<script type="module" src="app.js?v=4"></script>
+</body>
+</html>
